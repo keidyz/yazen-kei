@@ -1,45 +1,25 @@
-import styled from '@emotion/styled'
-import { PersonIcon } from '@radix-ui/react-icons'
+import styled from '@emotion/styled';
 import {
     Message,
     ScrollableContainer,
     NewMessageAlert,
-    LoadingSpinner
-} from '../components/index.js'
-import { useEffect, useState, useContext, useRef } from 'react'
-import { messageService, SavedMessage } from '../services/index.js'
-import { UserContext } from '../contexts/index.js'
-import { useVirtualizer } from '@tanstack/react-virtual'
+    LoadingSpinner,
+    ChatPageHeaderArea,
+} from '../components/index.js';
+import { useEffect, useState, useRef, useContext } from 'react';
+import { messageService, SavedMessage } from '../services/index.js';
+import { useVirtualizer, VirtualItem } from '@tanstack/react-virtual';
+import { infiniteQueryOptions, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { ChatGroupContext } from '../contexts/chat-group-context.js';
+import { Button, TextArea } from '@radix-ui/themes';
+import { generate } from 'random-words';
+import { UpdateIcon } from '@radix-ui/react-icons';
 
 const Wrapper = styled.div`
     display: flex;
     flex-direction: column;
     height: 100vh;
-`
-
-const PersonInfoArea = styled.div`
-    display: flex;
-    align-items: center;
-    padding: 10px;
-    background-color: #f0f0f0;
-    border-bottom: 1px solid #ccc;
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 30px;
-    span {
-        margin-left: 10px;
-        font-weight: bold;
-        color: #333;
-    }
-    svg {
-        width: 24px;
-        height: 24px;
-        color: #007bff;
-        flex-shrink: 0;
-    }
-`
+`;
 
 const InputArea = styled.div`
     display: flex;
@@ -52,323 +32,296 @@ const InputArea = styled.div`
     bottom: 0;
     left: 0;
     right: 0;
-    height: 30px;
+    height: 55px;
+    gap: 10px;
+`;
 
-    input {
-        flex: 1;
-        padding: 10px;
-        border: 1px solid #ccc;
-        border-radius: 4px;
-    }
-    button {
-        margin-left: 10px;
-        padding: 10px 15px;
-        background-color: #007bff;
-        color: white;
-        border: none;
-        border-radius: 4px;
-        cursor: pointer;
-        &:hover {
-            background-color: #0056b3;
-        }
-    }
-`
+const MessageInput = styled(TextArea)`
+    flex: 1;
+`;
+
+const OldestMessageReachedNotification = styled.div`
+    text-align: center;
+`;
 
 // @TODO modify webkit-scrollbar usage for prod / check user base
 const MessageArea = styled(ScrollableContainer)`
-    margin-top: 60px;
-    margin-bottom: 45px;
+    margin-top: 45px;
+    margin-bottom: 85px;
     overflow-y: auto;
     ::-webkit-scrollbar {
         display: none;
     }
-`
+`;
 
-const VirtualizerParent = styled.div<{ rowVirtualizerHeight: number }>`
+const VirtualizerParent = styled.div<{ virtualizerHeight: number }>`
     position: relative;
-    height: ${(props) => props.rowVirtualizerHeight+15}px;
-    width: 100%;
+    height: ${(props) => props.virtualizerHeight + 15}px;
     overflow: auto;
     ::-webkit-scrollbar {
         display: none;
     }
-`
+`;
+
+const VirtualizerItem = styled.div<{ virtualItem: VirtualItem }>`
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: ${(props) => props.virtualItem.size}px;
+    transform: translateY(${(props) => props.virtualItem.start}px) scaleY(-1);
+`;
 
 enum SystemMessageType {
     OLDEST_MESSAGE_REACHED = 'oldest_message_reached',
 }
 
 interface SystemMessage {
-    type: SystemMessageType
+    type: SystemMessageType;
 }
+const TANSTACK_QUERY_KEY = 'messages';
+const MESSAGE_FETCH_SIZE = 25;
 
-export function ChatPage() {
-    const [targetEmail, setTargetEmail] = useState<string | null>(
-        'kdyz1997extra@gmail.com'
-    )
-    const [messageGroupId, setMessageGroupId] = useState<string | null>(null)
-    const messageFetchSize = 25
-    const [user, setUser] = useState({
-        email: 'kzapra@gmail.com',
-    })
-    const logout = () => {
-        console.log('logout clicked')
-    }
-    // const { user, logout } = useContext(UserContext)
-    const [showNewMessageAlert, setShowNewMessageAlert] = useState(false)
-    const [oldestMessageReached, setOldestMessageReached] = useState(false)
-    const [hasScrolled, setHasScrolled] = useState(false)
-    const [isLoading, setIsLoading] = useState(false)
-    const [previousMessageCount, setPreviousMessageCount] = useState(0)
+export const ChatPage = () => {
+    const { communicationMembers, messageGroup } = useContext(ChatGroupContext);
+    const queryClient = useQueryClient();
 
-    const [messages, setMessages] = useState<(SavedMessage | SystemMessage)[]>(
-        []
-    )
-    const [messageText, setMessageText] = useState('')
-
-    const parentRef = useRef(null)
-
-    const rowVirtualizer = useVirtualizer({
-        count: messages.length,
-        getScrollElement: () => parentRef.current,
-        estimateSize: () => 25,
-        measureElement: (el) => {
-            return el.getBoundingClientRect().height
+    const queryOptions = infiniteQueryOptions({
+        queryKey: [TANSTACK_QUERY_KEY],
+        queryFn: async ({ pageParam: cursor = undefined }) => {
+            const fetchedMessages = await messageService.browseMessagesByGroupId(
+                messageGroup.id,
+                MESSAGE_FETCH_SIZE,
+                cursor
+            );
+            return {
+                fetchedMessages: fetchedMessages.length
+                    ? fetchedMessages
+                    : [
+                          {
+                              type: SystemMessageType.OLDEST_MESSAGE_REACHED,
+                          } as SystemMessage,
+                      ],
+                nextCursor: fetchedMessages.length
+                    ? fetchedMessages[fetchedMessages.length - 1].id
+                    : undefined,
+            };
         },
-        overscan: 5,
-    })
+        initialPageParam: undefined,
+        getNextPageParam: (lastPage) => lastPage && lastPage.nextCursor,
+    });
+
+    const { data, hasNextPage, isFetchingNextPage, fetchNextPage } = useInfiniteQuery(queryOptions);
+
+    const collectedMessages: (SavedMessage | SystemMessage)[] =
+        data?.pages.flatMap((page) => page.fetchedMessages as (SavedMessage | SystemMessage)[]) ||
+        [];
+    const [messageText, setMessageText] = useState('');
+    const previousScrollOffsetRef = useRef<number | null>(null);
+    const scrollParentRef = useRef(null);
+
+    const [hasNewFreshMessage, setHasNewFreshMessage] = useState(false);
+
+    const virtualizer = useVirtualizer({
+        count: collectedMessages.length,
+        getScrollElement: () => scrollParentRef.current,
+        estimateSize: () => 25,
+        measureElement: (element) => element.getBoundingClientRect().height,
+    });
 
     const isUserNearBottom = () => {
-        const el = parentRef.current
-        if (!el) return false
-        return el.scrollHeight - el.scrollTop - el.clientHeight < 100
-    }
-
-    useEffect(() => {
-
-        if (hasScrolled && messages.length > previousMessageCount) {
-            const aaaa = (messages.length - previousMessageCount) + 4
-            console.log('messages changed', hasScrolled, aaaa)
-            rowVirtualizer.scrollToIndex(aaaa, {
-                align: 'start',
-            })
-            setPreviousMessageCount(messages.length)
-            return
+        const element = scrollParentRef.current;
+        if (!element) {
+            return false;
         }
-        
-        if (hasScrolled || !messages.length) {
-            return
-        }
+        return element.scrollTop < 100;
+    };
 
-        scrollToBottom()
-
-        requestAnimationFrame(() => {
-            setHasScrolled(true)
-        })
-    }, [rowVirtualizer.getVirtualItems().length, messages.length])
+    const virtualItems = virtualizer.getVirtualItems();
 
     const handleSendMessage = async (text: string) => {
-        if (!messageGroupId || !text.trim()) {
-            return
+        const trimmedText = text.trim();
+        if (!trimmedText) {
+            return;
         }
-        const trimmedText = text.trim()
-        await messageService.addMessageToGroup(messageGroupId, {
+        await messageService.addMessageToGroup(messageGroup.id, {
             text: trimmedText,
-            senderEmail: user.email,
-        })
-    }
+            senderDisplayName: communicationMembers.displayName,
+        });
+    };
 
-    const handleNewMessage = (message: SavedMessage) => {
-        setMessages((previousMessages) => [message, ...previousMessages])
-    }
+    const scrollToBottomAndDisableNewMessageNotification = () => {
+        virtualizer.scrollToIndex(0, { align: 'end' });
+        setHasNewFreshMessage(false);
+    };
 
-    const handleScrollTop = async () => {
-        if (oldestMessageReached) {
-            return
+    const handleIncomingMessage = (message: SavedMessage) => {
+        if (scrollParentRef.current) {
+            previousScrollOffsetRef.current =
+                scrollParentRef.current.scrollHeight - scrollParentRef.current.scrollTop;
         }
-        setIsLoading(true)
-        const fetchedMessages = await messageService.browseMessagesByGroupId(
-            messageGroupId,
-            2,
-            (messages[messages.length - 1] as SavedMessage).id
-        )
-
-        setIsLoading(false)
-
-        if (!fetchedMessages.length) {
-            setMessages([
-                ...messages,
-                { type: SystemMessageType.OLDEST_MESSAGE_REACHED },
-            ])
-            setOldestMessageReached(true)
-            return
-        }
-
-        setMessages([...messages, ...fetchedMessages])
-    }
-
-    const scrollToBottom = () => {
-        rowVirtualizer.scrollToIndex(messages.length - 1, {
-            align: 'end',
-        })
-        setShowNewMessageAlert(false)
-    }
-
-    useEffect(() => {
-        const isNearBottom = isUserNearBottom()
-        if (isNearBottom) {
-            scrollToBottom()
-            return
-        }
-        setShowNewMessageAlert(true)
-    }, [messages.length])
-
-    useEffect(() => {
-        if (!targetEmail) {
-            setMessages([])
-            return
-        }
-        const getMessageGroupId = async () => {
-            const messageGroup =
-                await messageService.readMessageGroupByMemberEmails([
-                    user.email,
-                    targetEmail,
-                ])
-            if (!messageGroup) {
-                await messageService.addMessageGroup({
-                    memberEmails: [user.email, targetEmail],
-                })
-                return
+        setHasNewFreshMessage(true);
+        queryClient.setQueryData([TANSTACK_QUERY_KEY], (previousData: any) => {
+            if (!previousData) {
+                return previousData;
             }
-            setMessageGroupId(messageGroup.id)
-            const fetchedMessages =
-                await messageService.browseMessagesByGroupId(
-                    messageGroup.id,
-                    messageFetchSize
-                )
-            setMessages(fetchedMessages)
-        }
-        getMessageGroupId()
-    }, [targetEmail])
+
+            return {
+                ...previousData,
+                pages: [
+                    {
+                        fetchedMessages: [
+                            message,
+                            ...(previousData.pages[0]?.fetchedMessages || []),
+                        ],
+                        nextCursor: previousData.pages[0]?.nextCursor,
+                    },
+                    ...previousData.pages.slice(1),
+                ],
+            };
+        });
+    };
 
     useEffect(() => {
-        if (!messageGroupId) {
-            setMessages([])
-            return
+        const lastItem = virtualItems[virtualItems.length - 1];
+        if (!hasNextPage || isFetchingNextPage || lastItem.index < collectedMessages.length - 1) {
+            return;
         }
-        return messageService.listenForNewMessages(
-            messageGroupId,
-            handleNewMessage
-        )
-    }, [messageGroupId])
+        fetchNextPage();
+    }, [virtualItems, hasNextPage, isFetchingNextPage]);
+
+    useEffect(() => {
+        const scrollParentElement = scrollParentRef.current;
+        if (!scrollParentElement || previousScrollOffsetRef.current === null) {
+            return;
+        }
+
+        // @TODO: I'm going crazy.
+        // scroll is somewhat jittery whenever a new messages arrives
+        // and scroll bar is far from the bottom
+        // This is because parent.scrollHeight is not the final size
+        // Find a way to wait for everything to render to get the real size and
+        // use that measurement to stay in position
+        virtualizer.scrollToOffset(
+            scrollParentElement.scrollHeight - previousScrollOffsetRef.current + 63
+        );
+        previousScrollOffsetRef.current = null;
+    }, [collectedMessages.length]);
+
+    useEffect(() => {
+        const isNearBottom = isUserNearBottom();
+        if (isNearBottom) {
+            scrollToBottomAndDisableNewMessageNotification();
+            return;
+        }
+    }, [hasNewFreshMessage]);
+
+    // ✨ Lovingly ripped this off of https://github.com/TanStack/virtual/issues/27#issuecomment-2353481103 ✨
+    // Just typed it a bit
+    const reverseScroll = (event: WheelEvent) => {
+        event.preventDefault();
+        (event.currentTarget as HTMLDivElement).scrollTop -= event.deltaY;
+    };
+
+    useEffect(() => {
+        const scrollParent = scrollParentRef.current;
+        scrollParent?.addEventListener('wheel', reverseScroll, { passive: false });
+        const unsubscribeFromMessagelistener = messageService.listenForNewMessages(
+            messageGroup.id,
+            handleIncomingMessage
+        );
+        return () => {
+            unsubscribeFromMessagelistener();
+            scrollParent?.removeEventListener('wheel', reverseScroll);
+        };
+    }, []);
 
     return (
         <Wrapper>
-            <PersonInfoArea>
-                <label>
-                    current email
-                    <input
-                        type="text"
-                        onBlur={(event) => {
-                            const email = event.target.value.trim()
-                            setUser({ email: email })
-                        }}
-                    />
-                </label>
-                <label>
-                    target email
-                    <input
-                        onBlur={(event) => {
-                            const email = event.target.value.trim()
-                            setTargetEmail(email || null)
-                        }}
-                        type="text"
-                        placeholder="Enter email"
-                    />
-                </label>
-                <button onClick={logout}>logout</button>
-            </PersonInfoArea>
-            {/* <LoadingSpinner /> */}
-            {isLoading && <LoadingSpinner />}
-
-            {targetEmail ? (
-                <MessageArea ref={parentRef} onHitTop={handleScrollTop} onHitBottom={() => {
-                    setShowNewMessageAlert(false)
-                }}>
-                    <VirtualizerParent
-                        rowVirtualizerHeight={rowVirtualizer.getTotalSize()}
-                    >
-                        {rowVirtualizer.getVirtualItems().map((virtualItem) => {
-                            const reverseIndex =
-                                messages.length - 1 - virtualItem.index
-
-                            const message = messages[reverseIndex]
-                            const isSystemMessage =
-                                (message as SystemMessage).type !== undefined
-                            return (
-                                <div
-                                    key={virtualItem.index}
-                                    style={{
-                                        position: 'absolute',
-                                        top: 0,
-                                        left: 0,
-                                        width: '100%',
-                                        height: `${virtualItem.size}px`,
-                                        transform: `translateY(${virtualItem.start}px)`,
-                                    }}
-                                >
-                                    {isSystemMessage ? (
-                                        <div>oldest message reached</div>
-                                    ) : (
-                                        <Message
-                                            ref={rowVirtualizer.measureElement}
-                                            key={(message as SavedMessage).id}
-                                            text={
-                                                (message as SavedMessage).text
-                                            }
-                                            isFromCurrentUser={
-                                                (message as SavedMessage)
-                                                    .senderEmail === user.email
-                                            }
-                                            index={virtualItem.index}
-                                            timestamp={new Date(
-                                                (
-                                                    message as SavedMessage
-                                                ).createdAt.toDate()
-                                            ).toLocaleTimeString()}
-                                        />
-                                    )}
-                                </div>
-                            )
-                        })}
-                    </VirtualizerParent>
-                </MessageArea>
-            ) : undefined}
-            {targetEmail ? (
+            <ChatPageHeaderArea />
+            {isFetchingNextPage && <LoadingSpinner />}
+            <MessageArea
+                reverse={true}
+                ref={scrollParentRef}
+                onHitBottom={() => {
+                    setHasNewFreshMessage(false);
+                }}
+            >
+                <VirtualizerParent
+                    id="ugabuga-debug-scroll-height"
+                    virtualizerHeight={virtualizer.getTotalSize()}
+                >
+                    {virtualizer.getVirtualItems().map((virtualItem) => {
+                        const message = collectedMessages[virtualItem.index];
+                        const oldestMessageReached =
+                            message &&
+                            (message as unknown as SystemMessage).type ===
+                                SystemMessageType.OLDEST_MESSAGE_REACHED;
+                        return (
+                            <VirtualizerItem key={virtualItem.index} virtualItem={virtualItem}>
+                                {oldestMessageReached ? (
+                                    <OldestMessageReachedNotification>
+                                        - start of conversation -
+                                    </OldestMessageReachedNotification>
+                                ) : (
+                                    <Message
+                                        ref={virtualizer.measureElement}
+                                        key={(message as SavedMessage).id}
+                                        text={(message as SavedMessage).text}
+                                        isFromCurrentUser={
+                                            (message as SavedMessage).senderDisplayName ===
+                                            communicationMembers?.displayName
+                                        }
+                                        index={virtualItem.index}
+                                        timestamp={new Date(
+                                            (message as SavedMessage).createdAt.toDate()
+                                        ).toLocaleTimeString()}
+                                    />
+                                )}
+                            </VirtualizerItem>
+                        );
+                    })}
+                </VirtualizerParent>
+            </MessageArea>
+            <form>
                 <InputArea>
-                    <input
+                    <MessageInput
                         onChange={(event) => {
-                            event.preventDefault()
-                            setMessageText(event.target.value)
+                            event.preventDefault();
+                            setMessageText(event.target.value);
                         }}
-                        type="text"
                         placeholder="Type a message..."
                         value={messageText}
                     />
-                    <button
-                        onClick={(event) => {
-                            event.preventDefault()
-                            handleSendMessage(messageText)
-                            setMessageText('')
+                    <Button
+                        variant="outline"
+                        onClick={(e) => {
+                            e.preventDefault();
+                            const generatedWords = generate({ min: 5, max: 30 });
+                            const phrase =
+                                typeof generatedWords === 'string'
+                                    ? generatedWords
+                                    : generatedWords.join(' ');
+                            setMessageText(phrase);
                         }}
                     >
+                        <UpdateIcon />
+                    </Button>
+                    <Button
+                        variant="solid"
+                        onClick={(event) => {
+                            event.preventDefault();
+                            handleSendMessage(messageText);
+                            setMessageText('');
+                        }}
+                        type="submit"
+                    >
                         Send
-                    </button>
+                    </Button>
                 </InputArea>
-            ) : (
-                <>Select a target email first</>
+            </form>
+            {hasNewFreshMessage && (
+                <NewMessageAlert onClick={scrollToBottomAndDisableNewMessageNotification} />
             )}
-            {showNewMessageAlert && <NewMessageAlert onClick={scrollToBottom} />}            
         </Wrapper>
-    )
-}
+    );
+};

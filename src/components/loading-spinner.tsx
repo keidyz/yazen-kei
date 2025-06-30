@@ -1,4 +1,4 @@
-import styled from '@emotion/styled'
+import styled from '@emotion/styled';
 
 // Lovingly ripped off from https://codepen.io/catalinmortan/pen/JjVKqby
 
@@ -49,8 +49,8 @@ const Spinner = styled.div`
             transform: scale(1) translate(-50%, -50%);
         }
     }
-`
+`;
 
 export function LoadingSpinner() {
-    return <Spinner />
+    return <Spinner />;
 }

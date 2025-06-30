@@ -1,45 +1,47 @@
-import styled from '@emotion/styled'
-import { useEffect, useRef, useState } from 'react'
-import { Virtualizer } from '@tanstack/react-virtual'
-import { SavedMessage } from '../services/message-service.js'
-import { Message, NewMessageAlert } from '../components/index.js'
+import styled from '@emotion/styled';
+import { useRef, forwardRef } from 'react';
 
-export function ScrollableContainer({
-    children,
-    className,
-    ref,
-    onHitTop,
-    onHitBottom
-}: {
-    children?: React.ReactNode
-    className?: string
-    ref?: React.RefObject<HTMLDivElement>
-    onHitTop?: () => void
-    onHitBottom?: () => void
-}) {
-    const containerRef = ref || useRef(null)
+const TransformedWrapper = styled.div<{ flipY?: boolean }>(
+    ({ flipY }) => `
+    transform: ${flipY ? 'scaleY(-1)' : 'none'};
+`
+);
 
-    return (
-        <div
-            ref={containerRef}
-            className={className}
-            onScroll={async (event: any) => {
-                // console.log('scrolling', event.target.scrollTop)
-                const { scrollTop, scrollHeight, clientHeight } = event.target
-                const position = Math.ceil(
-                    (scrollTop / (scrollHeight - clientHeight)) * 100
-                )
-                if(position > 95) {
-                    onHitBottom?.()
-                    return
-                }
-                if (position === 0) {
-                    onHitTop?.()
-                    return
-                }
-            }}
-        >
-            {children}
-        </div>
-    )
+interface ScrollableContainerProps {
+    children?: React.ReactNode;
+    className?: string;
+    onHitTop?: () => void;
+    onHitBottom?: () => void;
+    reverse?: boolean;
 }
+
+// forward ref may be deprecated in react 19 https://react.dev/blog/2024/12/05/react-19#ref-as-a-prop
+// but I don't think emotion's styled components support the new way yet since I was having
+// issues with the ref not being passed down correctly
+export const ScrollableContainer = forwardRef<HTMLDivElement, ScrollableContainerProps>(
+    ({ children, className, onHitTop, onHitBottom, reverse }, ref) => {
+        const containerRef = ref || useRef(null);
+
+        return (
+            <TransformedWrapper
+                ref={containerRef}
+                className={className}
+                flipY={reverse}
+                onScroll={async (event: any) => {
+                    const { scrollTop, scrollHeight, clientHeight } = event.target;
+                    const position = Math.ceil((scrollTop / (scrollHeight - clientHeight)) * 100);
+                    if (position > 95) {
+                        reverse ? onHitTop?.() : onHitBottom?.();
+                        return;
+                    }
+                    if (position === 0) {
+                        reverse ? onHitBottom?.() : onHitTop?.();
+                        return;
+                    }
+                }}
+            >
+                {children}
+            </TransformedWrapper>
+        );
+    }
+);
